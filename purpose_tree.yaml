@@ -1,0 +1,106 @@
+# purpose_tree.yaml — AgentOS 目的树约束定义
+# ============================================
+# 玄鉴守护进程用它来检测行为是否偏离既定方向。
+# purpose_tree_tracker.py 读取此文件，检查代码是否违反约束。
+#
+# 设计原则：宁可漏报不可误报
+# - 只有明确发现违规模式时才返回 aligned=False
+# - 无法确定时返回 aligned=True（安全放行）
+
+version: "1.0"
+
+# 核心身份约束 — 玄鉴的本质
+identity:
+  name: "玄鉴（Xuanjian）"
+  role: "AgentOS 检测守护进程"
+  description: "检测造假/偏离/矛盾/事件风暴，不是评分器"
+
+  constraints:
+    - id: "xuanjian_no_scoring"
+      description: "玄鉴只输出三态信号(PASS/FAIL/SUSPECT)，不能有评分功能"
+      check_files:
+        - "xuanjian_quantify.py"
+      forbidden_patterns:
+        - "def.*compute_score"
+        - "def.*calculate_score"
+        - "total_score"
+        - "rating ="
+        - "grading"
+        - "评分管道"
+        - "return.*score$"
+      severity: "high"
+
+    - id: "xuanjian_three_state_only"
+      description: "检测结果必须是 PASS/FAIL/SUSPECT 三态之一"
+      check_files:
+        - "xuanjian_quantify.py"
+      required_patterns:
+        - "DetectionResult.PASS"
+        - "DetectionResult.FAIL"
+        - "DetectionResult.SUSPECT"
+      severity: "high"
+
+    - id: "four_dim_is_attachment"
+      description: "四维量化是信号附件，不是独立输出"
+      check_files:
+        - "xuanjian_quantify.py"
+      forbidden_patterns:
+        - "return four_dim$"
+        - "output_score"
+        - "def.*output_score"
+      severity: "medium"
+
+    - id: "confidence_filter_only"
+      description: "confidence 仅用于过滤低质量数据，不用于排名或评分"
+      check_files:
+        - "sandglass_query.py"
+      forbidden_patterns:
+        - "sort.*confidence"
+        - "rank.*confidence"
+        - "sorted.*confidence"
+      severity: "medium"
+
+    - id: "signal_single_consumer"
+      description: "每个信号有且仅有一个消费者，处理逻辑简单"
+      check_files:
+        - "signal_routes.py"
+      forbidden_patterns:
+        - "retry"
+        - "dead_letter"
+        - "compensate"
+      severity: "medium"
+
+# 信号通路约束
+signal_pathway:
+  description: "玄鉴→丰碑信号通路"
+  flow:
+    - "沙漏查询(sandglass_query) → 玄鉴检测(xuanjian_quantify)"
+    - "玄鉴检测 → 信号发送(signal_sender) → 丰碑接收(signal_routes)"
+    - "FAIL → 磨灭, PASS → 加固, SUSPECT → 仅记录"
+
+  constraints:
+    - id: "no_dead_letter_queue"
+      description: "信号通路不做重试/补偿/死信队列"
+      check_files:
+        - "signal_sender.py"
+        - "signal_routes.py"
+      forbidden_patterns:
+        - "retry_count"
+        - "dead_letter_queue"
+        - "compensation"
+      severity: "medium"
+
+# 磨灭/加固机制约束
+erosion_mechanism:
+  description: "丰碑磨灭/加固机制"
+  formula: "ranking_weight = cumulative_reinforcement × e^(-λ×t) × citation_heat"
+
+  constraints:
+    - id: "no_score_table"
+      description: "丰碑网络不应有积分表(score table)"
+      check_files:
+        - "database.py"
+      forbidden_patterns:
+        - "CREATE TABLE.*score"
+        - "score_repo"
+      severity: "high"
