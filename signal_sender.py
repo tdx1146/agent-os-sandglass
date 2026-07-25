@@ -56,7 +56,7 @@ class SignalSender:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.api_key:
-                headers["X-API-Key"] = self.api_key
+                headers["X-Monument-Key"] = self.api_key
             req = urllib.request.Request(
                 self._endpoint,
                 data=data,
