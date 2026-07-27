@@ -193,21 +193,37 @@ def _sync_index() -> dict:
             return idx
 
         # 增量：追加新行
+        new_indexed = 0
+        last_seen_line = idx_max
         with open(_SANDGLASS, "r", encoding="utf-8") as f:
             for n, line in enumerate(f, 1):
                 if n <= idx_max:
                     continue
                 ts, sender, text = _parse_line(line)
                 if not ts:
+                    last_seen_line = n  # 无时间戳行也推进指针，避免反复扫描
                     continue
                 for token in _tokenize(text):
                     idx.setdefault(token, []).append(n)
+                new_indexed += 1
+                last_seen_line = n
+
+        # 如果新行数为0且idx非空——idx已经覆盖了所有有效行，直接缓存返回
+        if new_indexed == 0 and idx:
+            _idx_cache = idx
+            try:
+                _idx_mtime = os.path.getmtime(_SANDGLASS)
+            except Exception:
+                pass
+            return idx
 
         # 原子写
         _write_idx(idx)
 
         # LRU驱逐——超过5000词条时清缓存重建（防止无限膨胀）
-        if len(idx) > 5000:
+        # 注意：只在确实索引了新内容时才检查LRU阈值
+        # 空跑增量（尾部只有无时间戳行）不应触发驱逐
+        if len(idx) > 5000 and new_indexed > 0:
             _idx_cache = {}
             return {}
         _idx_cache = idx
