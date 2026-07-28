@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class SignalSender:
     """信号发送器。将玄鉴检测结果发送到丰碑网络。"""
 
-    def __init__(self, monument_url: str = "http://127.0.0.1:5000",
+    def __init__(self, monument_url: str = "http://127.0.0.1:18891",
                  timeout: int = 5, api_key: str = None):
         self.monument_url = monument_url.rstrip("/")
         self.timeout = timeout
@@ -56,7 +56,7 @@ class SignalSender:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             headers = {"Content-Type": "application/json"}
             if self.api_key:
-                headers["X-Monument-Key"] = self.api_key
+                headers["X-API-Key"] = self.api_key
             req = urllib.request.Request(
                 self._endpoint,
                 data=data,
@@ -136,7 +136,7 @@ def get_sender(monument_url: str = None, reset: bool = False) -> SignalSender:
     if _default_sender is None or reset:
         with _sender_lock:
             if _default_sender is None or reset:
-                url = monument_url or os.environ.get("MONUMENT_API_URL", "http://127.0.0.1:5000")
+                url = monument_url or os.environ.get("MONUMENT_API_URL", "http://127.0.0.1:18891")
                 _default_sender = SignalSender(monument_url=url)
     return _default_sender
 

@@ -103,7 +103,7 @@ class XuanjianDaemon:
         if self._sender is None:
             from signal_sender import SignalSender
             url = self.monument_url or os.environ.get(
-                "MONUMENT_API_URL", "http://127.0.0.1:5000"
+                "MONUMENT_API_URL", "http://127.0.0.1:18891"
             )
             self._sender = SignalSender(monument_url=url, api_key=self.api_key)
         return self._sender
@@ -150,72 +150,43 @@ class XuanjianDaemon:
             return 0
 
         try:
-            # E05 修复：从文件尾部按块读取，避免全量加载到内存
-            count = 0
+            with open(bus_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            if not lines:
+                return 0
+
             now = datetime.now(timezone.utc)
-            max_scan_lines = 5000  # 最多扫描5000行
+            count = 0
 
-            with open(bus_path, "rb") as f:
-                f.seek(0, 2)
-                file_size = f.tell()
-                chunk_size = 8192
-                position = file_size
-                remaining = b""
-                scanned = 0
-                stop = False
-
-                while position > 0 and not stop and scanned < max_scan_lines:
-                    read_size = min(chunk_size, position)
-                    position -= read_size
-                    f.seek(position)
-                    chunk = f.read(read_size)
-                    data = chunk + remaining
-                    lines = data.split(b"\n")
-                    remaining = lines[0]
-
-                    for line in reversed(lines[1:]):
-                        scanned += 1
-                        if scanned > max_scan_lines:
-                            stop = True
-                            break
-                        line_str = line.strip()
-                        if not line_str:
-                            continue
+            # 从后往前扫描（最近的在末尾）
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    ts_str = event.get("t", "")
+                    if ts_str:
+                        # 尝试解析时间戳
                         try:
-                            event = json.loads(line_str.decode("utf-8"))
-                            ts_str = event.get("t", "")
-                            if ts_str:
-                                try:
-                                    event_time = datetime.fromisoformat(
-                                        ts_str.replace("Z", "+00:00")
-                                    )
-                                except (ValueError, TypeError):
-                                    count += 1
-                                    continue
-                                if (now - event_time).total_seconds() <= window_seconds:
-                                    count += 1
-                                else:
-                                    stop = True
-                                    break
-                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            # ISO 格式
+                            event_time = datetime.fromisoformat(
+                                ts_str.replace("Z", "+00:00")
+                            )
+                        except (ValueError, TypeError):
+                            # 无法解析时间 → 计入计数（保守策略）
+                            count += 1
                             continue
 
-                # E05 修复：处理循环结束后的剩余首行（文件第一行）
-                if remaining.strip() and not stop and scanned < max_scan_lines:
-                    try:
-                        event = json.loads(remaining.strip().decode("utf-8"))
-                        ts_str = event.get("t", "")
-                        if ts_str:
-                            try:
-                                event_time = datetime.fromisoformat(
-                                    ts_str.replace("Z", "+00:00")
-                                )
-                                if (now - event_time).total_seconds() <= window_seconds:
-                                    count += 1
-                            except (ValueError, TypeError):
-                                count += 1
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        pass
+                        # 检查是否在时间窗口内
+                        if (now - event_time).total_seconds() <= window_seconds:
+                            count += 1
+                        else:
+                            # 超出时间窗口，停止扫描
+                            break
+                except json.JSONDecodeError:
+                    continue
 
             return count
 
@@ -242,11 +213,6 @@ class XuanjianDaemon:
         """
         from purpose_tree_tracker import get_cached_purpose_check
 
-        # E08 修复：先递增计数，确保异常时也能反映巡检尝试
-        with self._lock:
-            self._inspection_count += 1
-            self._last_inspection_time = datetime.now(timezone.utc)
-
         # 1. 目的树偏离检测
         purpose_check = get_cached_purpose_check()
 
@@ -269,9 +235,11 @@ class XuanjianDaemon:
                 sender = self._get_sender()
                 send_result = sender.send(result, monument_id=self.monument_id)
 
-        # 5. 更新结果
+        # 5. 更新统计
         with self._lock:
+            self._inspection_count += 1
             self._last_result = result
+            self._last_inspection_time = datetime.now(timezone.utc)
 
         # 记录日志
         logger.info(

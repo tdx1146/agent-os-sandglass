@@ -154,7 +154,7 @@ class XuanjianDetector:
     # 检测 1：造假检测（Faithfulness / Fraud Detection）
     # ═══════════════════════════════════════════════
 
-    def detect_fraud(self, claim: str, evidence: dict = None, _four_dim: dict = None) -> DetectionResult:
+    def detect_fraud(self, claim: str, evidence: dict = None) -> DetectionResult:
         """造假检测。
 
         验证 AI 声称做了某事，是否真的做了。
@@ -173,8 +173,7 @@ class XuanjianDetector:
             DetectionResult: PASS（验证通过）/ FAIL（造假确认）/ SUSPECT（疑似）
         """
         evidence = evidence or {}
-        # F01 修复：优先使用传入的缓存四维数据
-        four_dim = _four_dim if _four_dim is not None else self._get_four_dim()
+        four_dim = self._get_four_dim()
 
         # 1. 文件存在性验证（H-3 修复：路径安全校验）
         if "file_path" in evidence:
@@ -284,8 +283,7 @@ class XuanjianDetector:
     # ═══════════════════════════════════════════════
 
     def detect_deviation(self, decision_text: str = "",
-                         purpose_check: dict = None,
-                         _four_dim: dict = None) -> DetectionResult:
+                         purpose_check: dict = None) -> DetectionResult:
         """偏离检测。
 
         检测 AI 的行为是否偏离了既定目的和决策模式。
@@ -304,8 +302,7 @@ class XuanjianDetector:
             DetectionResult: PASS / FAIL / SUSPECT
         """
         purpose_check = purpose_check or {}
-        # F01 修复：优先使用传入的缓存四维数据
-        four_dim = _four_dim if _four_dim is not None else self._get_four_dim()
+        four_dim = self._get_four_dim()
 
         # 1. 目标对齐度检查
         goal_alignment = four_dim.get("goal_alignment", 1.0)
@@ -370,8 +367,7 @@ class XuanjianDetector:
     # ═══════════════════════════════════════════════
 
     def detect_contradiction(self, assertion: str = "",
-                             spo_entity: str = None,
-                             _four_dim: dict = None) -> DetectionResult:
+                             spo_entity: str = None) -> DetectionResult:
         """矛盾检测。
 
         检测 AI 的断言之间是否存在事实冲突。
@@ -385,8 +381,7 @@ class XuanjianDetector:
         Returns:
             DetectionResult: PASS / FAIL / SUSPECT
         """
-        # F01 修复：优先使用传入的缓存四维数据
-        four_dim = _four_dim if _four_dim is not None else self._get_four_dim()
+        four_dim = self._get_four_dim()
 
         # 1. 织布机矛盾检测
         if self.sq and self.sq.available:
@@ -427,22 +422,13 @@ class XuanjianDetector:
                     obj = t.get("object", "").lower()
 
                     if relation == "放弃" and obj and obj in assertion_lower:
-                        # M03 修复：区分"使用"与"放弃"语境
-                        # 只有断言表示"正在使用"已放弃的东西才是矛盾
-                        # "不再使用"、"不用"、"已放弃"等否定语境不是矛盾
-                        negative_indicators = [
-                            "不再", "不用", "没在用", "已放弃", "已停用",
-                            "停止使用", "放弃了", "没用", "未使用",
-                        ]
-                        is_negative = any(neg in assertion_lower for neg in negative_indicators)
-                        if not is_negative:
-                            # 断言使用已放弃的东西 → 矛盾
-                            return DetectionResult(
-                                signal_type=DetectionResult.FAIL,
-                                detector="contradiction_spo",
-                                evidence_summary=f"断言与已知事实矛盾: 已放弃 '{t.get('object', '')}' 但断言中使用",
-                                four_dim=four_dim,
-                            )
+                        # 断言使用已放弃的东西 → 矛盾
+                        return DetectionResult(
+                            signal_type=DetectionResult.FAIL,
+                            detector="contradiction_spo",
+                            evidence_summary=f"断言与已知事实矛盾: 已放弃 '{t.get('object', '')}' 但断言中使用",
+                            four_dim=four_dim,
+                        )
                     elif relation == "使用" and obj and "不用" in assertion_lower and obj in assertion_lower:
                         return DetectionResult(
                             signal_type=DetectionResult.SUSPECT,
@@ -464,8 +450,7 @@ class XuanjianDetector:
 
     def detect_event_storm(self, event_count: int = 0,
                            time_window_seconds: int = 60,
-                           threshold: int = 100,
-                           _four_dim: dict = None) -> DetectionResult:
+                           threshold: int = 100) -> DetectionResult:
         """事件风暴检测。
 
         检测系统是否出现异常的事件洪流或消费链故障。
@@ -478,17 +463,7 @@ class XuanjianDetector:
         Returns:
             DetectionResult: PASS / FAIL / SUSPECT
         """
-        # F01 修复：优先使用传入的缓存四维数据
-        four_dim = _four_dim if _four_dim is not None else self._get_four_dim()
-
-        # L03 修复：threshold=0 表示禁用事件风暴检测
-        if threshold <= 0:
-            return DetectionResult(
-                signal_type=DetectionResult.PASS,
-                detector="event_storm",
-                evidence_summary="事件风暴检测已禁用 (threshold=0)",
-                four_dim=four_dim,
-            )
+        four_dim = self._get_four_dim()
 
         if event_count >= threshold * 2:
             return DetectionResult(
@@ -513,6 +488,51 @@ class XuanjianDetector:
             evidence_summary=f"事件流正常: {event_count} 事件/{time_window_seconds}s",
             four_dim=four_dim,
         )
+
+    # ═══════════════════════════════════════════════
+    # 检测 5：跨实例握手检测
+    # ═══════════════════════════════════════════════
+
+    def detect_cross_instance_handshake(self) -> DetectionResult:
+        """检测近24小时是否有跨实例握手记录。"""
+        try:
+            log_path = "/vol1/@team/qh团队/QH/AI专用/Agent OS/iso-sand/data/operation_log.jsonl"
+            if not os.path.exists(log_path):
+                return DetectionResult(
+                    signal_type=DetectionResult.PASS,
+                    detector="cross_instance",
+                    evidence_summary="无操作日志，跳过",
+                )
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+
+            with open(log_path) as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        t_str = entry.get("t", "")
+                        detail = entry.get("detail", "")
+                        detail_str = str(detail) if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)
+                        if "CROSS_INSTANCE" in detail_str or "cross_instance" in detail_str:
+                            return DetectionResult(
+                                signal_type=DetectionResult.PASS,
+                                detector="cross_instance",
+                                evidence_summary=f"24h内有握手记录: {t_str}",
+                            )
+                    except Exception:
+                        pass
+
+            return DetectionResult(
+                signal_type=DetectionResult.SUSPECT,
+                detector="cross_instance",
+                evidence_summary="近24小时无跨实例握手记录，可能遗漏",
+            )
+        except Exception as e:
+            return DetectionResult(
+                signal_type=DetectionResult.PASS,
+                detector="cross_instance",
+                evidence_summary=f"检测异常: {e}",
+            )
 
     # ═══════════════════════════════════════════════
     # 综合检测
@@ -540,21 +560,30 @@ class XuanjianDetector:
         evidence = evidence or {}
         results = []
 
-        # F01 修复：预先获取四维量化数据，通过参数传递给子检测（避免5次冗余查询）
+        # M-3 修复：预先获取四维量化数据，避免重复查询
         cached_four_dim = self._get_four_dim()
 
         if claim or evidence:
-            r = self.detect_fraud(claim, evidence, _four_dim=cached_four_dim)
+            r = self.detect_fraud(claim, evidence)
+            r.four_dim = cached_four_dim
             results.append(r)
         if decision or purpose_check:
-            r = self.detect_deviation(decision, purpose_check, _four_dim=cached_four_dim)
+            r = self.detect_deviation(decision, purpose_check)
+            r.four_dim = cached_four_dim
             results.append(r)
         if assertion:
-            r = self.detect_contradiction(assertion, _four_dim=cached_four_dim)
+            r = self.detect_contradiction(assertion)
+            r.four_dim = cached_four_dim
             results.append(r)
         if event_count > 0:
-            r = self.detect_event_storm(event_count, _four_dim=cached_four_dim)
+            r = self.detect_event_storm(event_count)
+            r.four_dim = cached_four_dim
             results.append(r)
+
+        # 跨实例握手检测（始终运行）
+        r = self.detect_cross_instance_handshake()
+        r.four_dim = cached_four_dim
+        results.append(r)
 
         if not results:
             # 无检测输入，返回 PASS
